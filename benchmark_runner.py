@@ -267,7 +267,7 @@ class GGUFBenchmarkRunner:
         """
         try:
             # Import here to avoid dependency issues if not installed
-            from lm_eval import evaluator, tasks
+            from lm_eval import evaluator
             
             print(f"Initializing benchmark: {benchmark}")
             
@@ -292,11 +292,37 @@ class GGUFBenchmarkRunner:
                     except Exception as e:
                         logger.warning(f"Could not measure GPU memory: {e}")
                 
-                # Use the built-in 'gguf' model directly with our model path
+                # Find available model type in lm-eval (try multiple possibilities)
                 try:
-                    # Run the evaluation with proper timeout handling
+                    # First, check which model types are available in the registry
+                    from lm_eval.api.registry import ALL_MODELS
+                    
+                    # Try these model types in order of preference
+                    model_types = ['gguf', 'ggml', 'llama_cpp', 'llama-cpp']
+                    model_type = None
+                    
+                    for type_name in model_types:
+                        if type_name in ALL_MODELS:
+                            logger.info(f"Found compatible model type: {type_name}")
+                            model_type = type_name
+                            break
+                    
+                    if not model_type:
+                        # None of the preferred types found, but we'll try 'gguf' anyway
+                        logger.warning(f"No compatible model type found in registry. Available models: {list(ALL_MODELS.keys())[:10]}")
+                        model_type = 'gguf'
+                        
+                except Exception as e:
+                    # If we can't check available models, default to 'gguf'
+                    logger.warning(f"Could not check available model types: {e}")
+                    model_type = 'gguf'
+                
+                logger.info(f"Using model type: {model_type}")
+                
+                # Run the evaluation with proper timeout handling
+                try:
                     results = evaluator.simple_evaluate(
-                        model="gguf",
+                        model=model_type,
                         model_args=f"pretrained={self.model_path},n_gpu_layers={self.n_gpu_layers},n_ctx={self.context_size}",
                         tasks=[benchmark],
                         batch_size=1,
