@@ -48,7 +48,7 @@ read -n 1 -s -r -p "Press any key to continue..."
 echo
 
 # Run the Python script
-python gguf_benchmark.py --model_path "$MODEL_PATH" --output_dir "$OUTPUT_DIR" --n_gpu_layers "$GPU_LAYERS" --context_size "$CONTEXT_SIZE" --benchmarks "$BENCHMARKS"
+python3 gguf_benchmark.py --model_path "$MODEL_PATH" --output_dir "$OUTPUT_DIR" --n_gpu_layers "$GPU_LAYERS" --context_size "$CONTEXT_SIZE" --benchmarks "$BENCHMARKS"
 
 # Keep console open
 echo
