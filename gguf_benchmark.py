@@ -60,7 +60,6 @@ try:
 except ImportError:
     LLAMA_CPP_AVAILABLE = False
     print("Warning: llama-cpp-python not found. Please install with CUDA support:")
-    print("pip install llama-cpp-python --force-reinstall --upgrade --no-cache-dir")
 
 
 class GGUFBenchmark:
