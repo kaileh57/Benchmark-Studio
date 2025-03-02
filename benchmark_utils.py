@@ -50,36 +50,87 @@ def check_system_requirements() -> Dict[str, Any]:
         import torch
         cuda_available = torch.cuda.is_available()
         if cuda_available:
+            # Get CUDA properties
             cuda_device_count = torch.cuda.device_count()
             cuda_device_name = torch.cuda.get_device_name(0)
+            
+            # Get CUDA version
+            cuda_version = torch.version.cuda if hasattr(torch.version, 'cuda') else "Unknown"
+            
+            # Get device properties
+            device_props = torch.cuda.get_device_properties(0)
+            total_memory = device_props.total_memory / (1024**3)  # Convert to GB
+            
+            # Verify CUDA is working by creating a small tensor
+            try:
+                _ = torch.zeros(1).cuda()
+                cuda_working = True
+            except Exception as e:
+                cuda_working = False
+                logging.error(f"CUDA initialization error: {e}")
         else:
             cuda_device_count = 0
             cuda_device_name = "N/A"
+            cuda_version = "N/A"
+            total_memory = 0
+            cuda_working = False
     except ImportError:
         cuda_available = False
         cuda_device_count = 0
         cuda_device_name = "N/A"
+        cuda_version = "N/A"
+        total_memory = 0
+        cuda_working = False
     
     # Check for llama-cpp-python
     try:
         from llama_cpp import Llama
+        # Check if llama-cpp was built with CUDA support
+        try:
+            llama_cpp_cuda_built = hasattr(Llama, "_STD_CUDA_GPU_LAYERS")
+            if not llama_cpp_cuda_built:
+                logging.warning("llama-cpp-python is installed but may not be built with CUDA support")
+        except:
+            llama_cpp_cuda_built = "Unknown"
+        llama_cpp_version = Llama.__version__ if hasattr(Llama, "__version__") else "Unknown"
         llama_cpp_available = True
     except ImportError:
         llama_cpp_available = False
+        llama_cpp_cuda_built = False
+        llama_cpp_version = "N/A"
     
     # Check for lm_eval
     try:
         from lm_eval import evaluator, tasks
+        # Verify gguf model is available
+        from lm_eval.api.registry import ALL_MODELS
+        gguf_available = "gguf" in ALL_MODELS
         lm_eval_available = True
     except ImportError:
         lm_eval_available = False
+        gguf_available = False
+    except Exception as e:
+        logging.error(f"Error checking lm_eval: {e}")
+        lm_eval_available = True
+        gguf_available = "Unknown"
     
+    # Get system information
+    import platform
     system_info = {
         "cuda_available": cuda_available,
+        "cuda_working": cuda_working,
         "cuda_device_count": cuda_device_count,
         "cuda_device_name": cuda_device_name,
+        "cuda_version": cuda_version,
+        "gpu_total_memory": f"{total_memory:.2f} GB" if total_memory > 0 else "N/A",
         "llama_cpp_available": llama_cpp_available,
+        "llama_cpp_version": llama_cpp_version,
+        "llama_cpp_cuda_built": llama_cpp_cuda_built,
         "lm_eval_available": lm_eval_available,
+        "gguf_available": gguf_available,
+        "os_system": platform.system(),
+        "os_release": platform.release(),
+        "python_version": platform.python_version(),
         "timestamp": datetime.now().strftime("%Y%m%d_%H%M%S")
     }
     
@@ -89,25 +140,56 @@ def print_system_info(system_info: Dict[str, Any]) -> None:
     """Print system information with colors"""
     print(f"{Fore.YELLOW}Checking system requirements...{Style.RESET_ALL}")
     
+    # Check CUDA availability
     if system_info["cuda_available"]:
-        print(f"{Fore.GREEN}✓ CUDA is available: {system_info['cuda_device_name']}{Style.RESET_ALL}")
+        if system_info["cuda_working"]:
+            print(f"{Fore.GREEN}✓ CUDA is available: {system_info['cuda_device_name']} ({system_info['gpu_total_memory']}){Style.RESET_ALL}")
+            print(f"{Fore.CYAN}  CUDA version: {system_info['cuda_version']}{Style.RESET_ALL}")
+        else:
+            print(f"{Fore.YELLOW}⚠ CUDA is available but not working properly: {system_info['cuda_device_name']}{Style.RESET_ALL}")
+            print(f"{Fore.YELLOW}  CUDA initialization failed. Check your installation.{Style.RESET_ALL}")
     else:
         print(f"{Fore.RED}× CUDA is not available. The benchmark will run on CPU only.{Style.RESET_ALL}")
         print(f"{Fore.RED}  This will be significantly slower.{Style.RESET_ALL}")
     
+    # Check llama-cpp-python availability
     if system_info["llama_cpp_available"]:
-        print(f"{Fore.GREEN}✓ llama-cpp-python is installed{Style.RESET_ALL}")
+        print(f"{Fore.GREEN}✓ llama-cpp-python is installed (version: {system_info['llama_cpp_version']}){Style.RESET_ALL}")
+        
+        # Check if built with CUDA
+        if system_info["llama_cpp_cuda_built"] == True:
+            print(f"{Fore.GREEN}  ✓ Built with CUDA support{Style.RESET_ALL}")
+        elif system_info["llama_cpp_cuda_built"] == False:
+            print(f"{Fore.YELLOW}  ⚠ Not built with CUDA support - GPU acceleration unavailable{Style.RESET_ALL}")
+            print(f"{Fore.YELLOW}  Install with CUDA support:{Style.RESET_ALL}")
+            print(f"{Fore.CYAN}  pip install llama-cpp-python --extra-index-url https://jllllll.github.io/llama-cpp-python-cuBLAS-wheels/AVX2/cu117{Style.RESET_ALL}")
+        else:
+            print(f"{Fore.YELLOW}  ? CUDA support status unknown{Style.RESET_ALL}")
     else:
         print(f"{Fore.RED}× llama-cpp-python is required but not found.{Style.RESET_ALL}")
         print(f"{Fore.YELLOW}  Please install it with CUDA support:{Style.RESET_ALL}")
         print(f"{Fore.CYAN}  pip install llama-cpp-python --extra-index-url https://jllllll.github.io/llama-cpp-python-cuBLAS-wheels/AVX2/cu117{Style.RESET_ALL}")
     
+    # Check lm-evaluation-harness availability
     if system_info["lm_eval_available"]:
         print(f"{Fore.GREEN}✓ lm-evaluation-harness is installed{Style.RESET_ALL}")
+        
+        # Check if GGUF model type is available
+        if system_info["gguf_available"] == True:
+            print(f"{Fore.GREEN}  ✓ GGUF model type is supported{Style.RESET_ALL}")
+        elif system_info["gguf_available"] == False:
+            print(f"{Fore.RED}  × GGUF model type is not supported in your lm-eval version{Style.RESET_ALL}")
+            print(f"{Fore.YELLOW}  Please update lm-eval:{Style.RESET_ALL}")
+            print(f"{Fore.CYAN}  pip install --upgrade lm-eval{Style.RESET_ALL}")
+        else:
+            print(f"{Fore.YELLOW}  ? GGUF support status unknown{Style.RESET_ALL}")
     else:
         print(f"{Fore.RED}× lm-evaluation-harness is required but not found.{Style.RESET_ALL}")
         print(f"{Fore.YELLOW}  Please install it:{Style.RESET_ALL}")
         print(f"{Fore.CYAN}  pip install lm-eval{Style.RESET_ALL}")
+    
+    # Print system information
+    print(f"{Fore.CYAN}System: {system_info['os_system']} {system_info['os_release']} | Python: {system_info['python_version']}{Style.RESET_ALL}")
     
     print(f"{Fore.GREEN}✓ All checks completed{Style.RESET_ALL}")
 

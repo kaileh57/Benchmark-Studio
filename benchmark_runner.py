@@ -95,6 +95,18 @@ class GGUFBenchmarkRunner:
             bool: True if model loaded successfully, False otherwise
         """
         try:
+            # Check CUDA status before loading
+            import torch
+            if torch.cuda.is_available():
+                # Print CUDA information
+                cuda_device_name = torch.cuda.get_device_name(0)
+                total_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)  # Convert to GB
+                logger.info(f"CUDA is available: {cuda_device_name} ({total_memory:.2f} GB total VRAM)")
+                
+                # Force CUDA initialization
+                _ = torch.zeros(1).cuda()
+                logger.info("CUDA initialized successfully")
+            
             from llama_cpp import Llama
             
             print(f"\n{Fore.CYAN}Loading model: {self.model_path}{Style.RESET_ALL}")
@@ -131,8 +143,21 @@ class GGUFBenchmarkRunner:
             progress_thread.daemon = True
             progress_thread.start()
             
+            # Check available VRAM before loading
+            if torch.cuda.is_available():
+                free_memory = torch.cuda.memory_reserved(0) - torch.cuda.memory_allocated(0)
+                logger.info(f"Available CUDA memory before loading: {free_memory/(1024**3):.2f} GB")
+            
             try:
-                # Actual model loading - catch any warnings or non-critical errors
+                # Force CUDA_VISIBLE_DEVICES to use GPU 0
+                os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+                
+                # Make sure n_gpu_layers is valid
+                if self.n_gpu_layers < -1 or self.n_gpu_layers == 0:
+                    self.n_gpu_layers = -1  # Default to all layers
+                    logger.warning(f"Invalid n_gpu_layers value, defaulting to -1 (all layers)")
+                
+                # Actual model loading with explicit GPU parameters
                 if self.verbose:
                     load_start = time.time()
                     # In verbose mode, show all output
@@ -141,7 +166,10 @@ class GGUFBenchmarkRunner:
                         n_gpu_layers=self.n_gpu_layers,
                         n_ctx=self.context_size,
                         verbose=self.verbose,
-                        logits_all=True  # Need logits for benchmark
+                        logits_all=True,  # Need logits for benchmark
+                        use_mlock=True,   # Lock memory to prevent swapping
+                        use_mmap=True,    # Use memory mapping for faster loading
+                        seed=42           # Use consistent seed for reproducibility
                     )
                     load_time = time.time() - load_start
                     logger.debug(f"Model loaded in {load_time:.2f} seconds")
@@ -169,7 +197,10 @@ class GGUFBenchmarkRunner:
                             n_gpu_layers=self.n_gpu_layers,
                             n_ctx=self.context_size,
                             verbose=False,
-                            logits_all=True  # Need logits for benchmark
+                            logits_all=True,  # Need logits for benchmark
+                            use_mlock=True,   # Lock memory to prevent swapping
+                            use_mmap=True,    # Use memory mapping for faster loading
+                            seed=42           # Use consistent seed for reproducibility
                         )
                 
                 # Signal that loading is complete
@@ -183,12 +214,30 @@ class GGUFBenchmarkRunner:
                 loader.update(remaining)
                 loader.close()
                 
+                # Verify GPU memory usage after loading to confirm GPU utilization
+                if torch.cuda.is_available():
+                    gpu_mem_allocated = torch.cuda.memory_allocated(0) / (1024**3)  # Convert to GB
+                    gpu_mem_reserved = torch.cuda.memory_reserved(0) / (1024**3)    # Convert to GB
+                    
+                    # Log detailed GPU memory usage
+                    logger.info(f"GPU memory allocated after loading: {gpu_mem_allocated:.2f} GB")
+                    logger.info(f"GPU memory reserved after loading: {gpu_mem_reserved:.2f} GB")
+                    
+                    # Print GPU memory usage to console
+                    print(f"{Fore.CYAN}GPU memory usage: {gpu_mem_allocated:.2f} GB allocated, {gpu_mem_reserved:.2f} GB reserved{Style.RESET_ALL}")
+                    
+                    # If almost no GPU memory is being used, it's likely not using the GPU properly
+                    if gpu_mem_allocated < 0.01 and self.n_gpu_layers != 0:
+                        print(f"{Fore.YELLOW}Warning: Very little GPU memory is being used. The model may not be utilizing GPU properly.{Style.RESET_ALL}")
+                        logger.warning(f"Low GPU memory usage detected: {gpu_mem_allocated:.4f} GB")
+                
                 # Update system info with model metadata
-                import torch
                 self.system_info.update({
                     "cuda_available": torch.cuda.is_available(),
                     "cuda_device_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
                     "cuda_device_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "N/A",
+                    "gpu_mem_allocated": f"{gpu_mem_allocated:.2f} GB" if torch.cuda.is_available() else "N/A",
+                    "gpu_mem_reserved": f"{gpu_mem_reserved:.2f} GB" if torch.cuda.is_available() else "N/A",
                 })
                 
                 # Print successful load message
@@ -229,24 +278,26 @@ class GGUFBenchmarkRunner:
             try:
                 start_time = time.time()
                 
-                # Create adapter
-                adapter = LlamaCppAdapter(self.model)
+                # Set up additional args for evaluation
+                additional_args = {}
+                if self.verbose:
+                    additional_args["verbosity"] = "DEBUG"
                 
-                # Register the adapter with lm-eval
-                from lm_eval.api.registry import register_model
-                register_model("llama-cpp-adapter", lambda **kwargs: adapter)
+                # Check GPU memory usage before model evaluation
+                if self.system_info.get("cuda_available", False):
+                    try:
+                        import torch
+                        before_mem = torch.cuda.memory_allocated(0)
+                        logger.info(f"GPU memory usage before benchmark: {before_mem/1024**2:.2f} MB")
+                    except Exception as e:
+                        logger.warning(f"Could not measure GPU memory: {e}")
                 
-                # Run the evaluation with proper error handling
-                # We'll use a try/except block to catch specific errors
+                # Use the built-in 'gguf' model directly with our model path
                 try:
-                    # Set up additional args for evaluation
-                    additional_args = {}
-                    if self.verbose:
-                        additional_args["verbosity"] = "DEBUG"
-                    
                     # Run the evaluation with proper timeout handling
                     results = evaluator.simple_evaluate(
-                        model="llama-cpp-adapter",
+                        model="gguf",
+                        model_args=f"pretrained={self.model_path},n_gpu_layers={self.n_gpu_layers},n_ctx={self.context_size}",
                         tasks=[benchmark],
                         batch_size=1,
                         device="cuda" if self.system_info.get("cuda_available", False) else "cpu",
