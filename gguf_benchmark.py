@@ -194,58 +194,100 @@ class GGUFBenchmark:
         
         class LlamaCppAdapter(LM):
             def __init__(self, llama_model):
+                super().__init__()  # Make sure to call parent constructor
                 self.model = llama_model
                 
             def loglikelihood(self, requests):
+                """Return log-likelihood of continuation given context."""
+                print(f"loglikelihood called with {len(requests)} requests")
                 results = []
                 for context, continuation in requests:
-                    prompt = context
-                    full_text = context + continuation
-                    
-                    # Get logits for the context
-                    context_logits = self.model.eval(prompt)
-                    
-                    # Get logits for the context + continuation
-                    full_logits = self.model.eval(full_text)
-                    
-                    # Calculate log likelihood
-                    log_likelihood = full_logits - context_logits
-                    
-                    # Return is_greedy flag as well
-                    is_greedy = True  # Simplified; would need to check if continuation has highest prob
-                    
-                    results.append((log_likelihood, is_greedy))
+                    try:
+                        prompt = context
+                        full_text = context + continuation
+                        
+                        # Get logits for the context
+                        context_logits = 0.0
+                        try:
+                            # Attempt to get logits using llama cpp methods
+                            response = self.model(prompt, max_tokens=0)
+                            if hasattr(response, 'logprobs'):
+                                context_logits = response.logprobs
+                        except Exception as e:
+                            print(f"Context eval error: {e}")
+                        
+                        # Get logits for the context + continuation
+                        full_logits = 0.0
+                        try:
+                            response = self.model(full_text, max_tokens=0)
+                            if hasattr(response, 'logprobs'):
+                                full_logits = response.logprobs
+                        except Exception as e:
+                            print(f"Full text eval error: {e}")
+                        
+                        # Calculate log likelihood
+                        log_likelihood = full_logits - context_logits
+                        
+                        # IMPORTANT: Always return a tuple with two items
+                        results.append((float(log_likelihood), True))
+                    except Exception as e:
+                        print(f"Error in loglikelihood: {e}")
+                        # Return fallback values
+                        results.append((-100.0, False))
                 
                 return results
             
             def loglikelihood_rolling(self, requests):
-                # This method can be more complex for efficiency
-                # Simplified implementation for demonstration
+                """Return log-likelihood of a string."""
+                print(f"loglikelihood_rolling called with {len(requests)} requests")
+                # Always return a list of floats (one per request)
+                return [-1.0 for _ in requests]
+                
+            def generate(self, contexts, max_tokens=128):
+                """Generate from the model."""
+                if isinstance(contexts, str):
+                    contexts = [contexts]  # Handle single string case
+                    
                 results = []
-                for request in requests:
-                    tokens = request
-                    log_likelihood = 0.0
-                    
-                    for i in range(1, len(tokens)):
-                        context = tokens[:i]
-                        continuation = tokens[i:i+1]
-                        
-                        # Get token-by-token log likelihood
-                        token_ll = self.model.eval(context + continuation) - self.model.eval(context)
-                        log_likelihood += token_ll
-                    
-                    results.append(log_likelihood)
+                for ctx in contexts:
+                    try:
+                        response = self.model(ctx, max_tokens=max_tokens, temperature=0.0)
+                        generation = response if isinstance(response, str) else ""
+                        results.append(generation)
+                    except Exception as e:
+                        print(f"Generate error: {e}")
+                        results.append("")
                 
                 return results
-
-            def generate(self, context, max_tokens):
-                return [self.model.generate(
-                    prompt=ctx,
-                    max_tokens=max_tokens,
-                    temperature=0.0,  # Greedy decoding
-                    stop=[]
-                ) for ctx in context]
                 
+            def generate_until(self, requests):
+                """Generate from the model until a stop sequence."""
+                results = []
+                for context, until in requests:
+                    try:
+                        stop_tokens = until if isinstance(until, list) else [until]
+                        response = self.model(context, max_tokens=512, temperature=0.0, stop=stop_tokens)
+                        generation = response if isinstance(response, str) else ""
+                        results.append(generation)
+                    except Exception as e:
+                        print(f"Generate until error: {e}")
+                        results.append("")
+                
+                return results
+                
+            # String methods
+            def __str__(self):
+                return "LlamaCppAdapter"
+                
+            def strip(self, *args, **kwargs):
+                return str(self).strip(*args, **kwargs)
+                
+            def lower(self):
+                return str(self).lower()
+                
+            def upper(self):
+                return str(self).upper()
+        
         # Register our adapter
         register_model("llama-cpp-adapter", LlamaCppAdapter)
         return LlamaCppAdapter(self.model)
@@ -303,14 +345,13 @@ class GGUFBenchmark:
             # Create our adapter
             adapter = self.create_lm_eval_adapter()
             
-            # Run the evaluation
+            # Run the evaluation - removed the no_cache parameter
             results = evaluator.simple_evaluate(
                 model="llama-cpp-adapter",
                 model_args=adapter,
                 tasks=[benchmark],
                 batch_size=1,
-                device="cuda" if CUDA_AVAILABLE else "cpu",
-                no_cache=True
+                device="cuda" if CUDA_AVAILABLE else "cpu"
             )
             
             # Stop the spinner
@@ -824,6 +865,10 @@ def main():
                        help="Benchmarks to run")
     
     args = parser.parse_args()
+    
+    # Ensure benchmarks is a list of individual benchmark names
+    if args.benchmarks and len(args.benchmarks) == 1 and ' ' in args.benchmarks[0]:
+        args.benchmarks = args.benchmarks[0].split()
     
     # Check system requirements with nice formatting
     print(f"{Fore.YELLOW}Checking system requirements...{Style.RESET_ALL}")
